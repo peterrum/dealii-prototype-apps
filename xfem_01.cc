@@ -36,6 +36,8 @@
 #include <deal.II/grid/grid_generator.h>
 
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
 
@@ -43,6 +45,7 @@
 #include <deal.II/non_matching/fe_values.h>
 #include <deal.II/non_matching/mesh_classifier.h>
 
+#include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
@@ -54,7 +57,7 @@ enum ActiveFEIndex
 {
   inside      = 0,
   intersected = 1,
-  outside     = 1
+  outside     = 2
 };
 
 template <int dim>
@@ -88,7 +91,8 @@ test()
   ls_dof_handler.distribute_dofs(FE_Q<dim>(fe_degree));
 
   Vector<double> ls_vector(ls_dof_handler.n_dofs());
-  const Functions::SignedDistance::Sphere<dim> signed_distance_sphere;
+  const Functions::SignedDistance::Sphere<dim> signed_distance_sphere(
+    Point<dim>(), 0.7);
   VectorTools::interpolate(ls_dof_handler, signed_distance_sphere, ls_vector);
 
   NonMatching::MeshClassifier<dim> mesh_classifier(ls_dof_handler, ls_vector);
@@ -136,6 +140,10 @@ test()
   const QGauss<1> quadrature_1D(fe_degree + 1);
 
   NonMatching::RegionUpdateFlags region_update_flags;
+  region_update_flags.inside =
+    update_values | update_gradients | update_JxW_values;
+  region_update_flags.outside =
+    update_values | update_gradients | update_JxW_values;
   region_update_flags.surface = update_values | update_gradients |
                                 update_JxW_values | update_quadrature_points |
                                 update_normal_vectors;
@@ -147,9 +155,16 @@ test()
                                                     ls_dof_handler,
                                                     ls_vector);
 
-  AffineConstraints<double> dummy;
+  AffineConstraints<double> constraints;
+  DoFTools::make_zero_boundary_constraints(dof_handler, constraints);
+  constraints.close();
 
   std::vector<types::global_dof_index> indices;
+
+  Vector<double> solution(dof_handler.n_dofs());
+  Vector<double> rhs(dof_handler.n_dofs());
+
+  solution = 0.0;
 
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
@@ -157,23 +172,19 @@ test()
 
       non_matching_fe_values.reinit(cell);
 
-      if (cell_location == NonMatching::LocationToLevelSet::inside)
-        {
-          // nothing to do
-        }
-      else if (cell_location == NonMatching::LocationToLevelSet::intersected)
-        {
-          // compute coupling term
-          const auto &fe_values =
-            *non_matching_fe_values.get_surface_fe_values();
+      const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+      FullMatrix<double> local_stiffness(dofs_per_cell, dofs_per_cell);
+      Vector<double>     local_vector(dofs_per_cell);
+      indices.resize(dofs_per_cell);
+      cell->get_dof_indices(indices);
 
-          const unsigned int dofs_per_cell = fe_values.dofs_per_cell;
-          FullMatrix<double> local_stiffness(dofs_per_cell, dofs_per_cell);
-          indices.resize(dofs_per_cell);
-          cell->get_dof_indices(indices);
+      if (cell_location == NonMatching::LocationToLevelSet::inside ||
+          cell_location == NonMatching::LocationToLevelSet::intersected)
+        {
+          const auto &fe_values =
+            *non_matching_fe_values.get_inside_fe_values();
 
           FEValuesExtractors::Scalar u_0(0);
-          FEValuesExtractors::Scalar u_1(1);
 
           const auto &fe = cell->get_fe();
 
@@ -186,31 +197,111 @@ test()
 
                   if (i_comp == 0 && j_comp == 0)
                     local_stiffness[i][j] += fe_values.JxW(q) *
+                                             fe_values[u_0].gradient(i, q) *
+                                             fe_values[u_0].gradient(j, q);
+                }
+
+          for (const unsigned int i : fe_values.dof_indices())
+            for (const unsigned int q : fe_values.quadrature_point_indices())
+              {
+                const auto i_comp = fe.system_to_component_index(i).first;
+
+                if (i_comp == 0)
+                  local_vector[i] +=
+                    fe_values.JxW(q) * fe_values[u_0].value(i, q) * 1.0;
+              }
+        }
+
+      if (cell_location == NonMatching::LocationToLevelSet::outside ||
+          cell_location == NonMatching::LocationToLevelSet::intersected)
+        {
+          const auto &fe_values =
+            *non_matching_fe_values.get_outside_fe_values();
+
+          FEValuesExtractors::Scalar u_1(1);
+
+          const auto &fe = cell->get_fe();
+
+          for (const unsigned int i : fe_values.dof_indices())
+            for (const unsigned int j : fe_values.dof_indices())
+              for (const unsigned int q : fe_values.quadrature_point_indices())
+                {
+                  const auto i_comp = fe.system_to_component_index(i).first;
+                  const auto j_comp = fe.system_to_component_index(j).first;
+
+                  if (i_comp == 1 && j_comp == 1)
+                    local_stiffness[i][j] += fe_values.JxW(q) *
+                                             fe_values[u_1].gradient(i, q) *
+                                             fe_values[u_1].gradient(j, q);
+                }
+
+          for (const unsigned int i : fe_values.dof_indices())
+            for (const unsigned int q : fe_values.quadrature_point_indices())
+              {
+                const auto i_comp = fe.system_to_component_index(i).first;
+
+                if (i_comp == 1)
+                  local_vector[i] +=
+                    fe_values.JxW(q) * fe_values[u_1].value(i, q) * 4.0;
+              }
+        }
+
+      if (cell_location == NonMatching::LocationToLevelSet::intersected)
+        {
+          // compute coupling term
+          const auto &fe_values =
+            *non_matching_fe_values.get_surface_fe_values();
+
+          FEValuesExtractors::Scalar u_0(0);
+          FEValuesExtractors::Scalar u_1(1);
+
+          const auto &fe = cell->get_fe();
+
+          const double alpha = 1;
+
+          for (const unsigned int i : fe_values.dof_indices())
+            for (const unsigned int j : fe_values.dof_indices())
+              for (const unsigned int q : fe_values.quadrature_point_indices())
+                {
+                  const auto i_comp = fe.system_to_component_index(i).first;
+                  const auto j_comp = fe.system_to_component_index(j).first;
+
+                  if (i_comp == 0 && j_comp == 0)
+                    local_stiffness[i][j] += alpha * fe_values.JxW(q) *
                                              fe_values[u_0].value(i, q) *
                                              fe_values[u_0].value(j, q);
                   else if (i_comp == 0 && j_comp == 0)
-                    local_stiffness[i][j] += fe_values.JxW(q) *
+                    local_stiffness[i][j] += alpha * fe_values.JxW(q) *
                                              fe_values[u_1].value(i, q) *
                                              fe_values[u_1].value(j, q);
                   else if (i_comp == 0 && j_comp == 1)
-                    local_stiffness[i][j] -= fe_values.JxW(q) *
+                    local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
                                              fe_values[u_0].value(i, q) *
                                              fe_values[u_1].value(j, q);
                   else if (i_comp == 1 && j_comp == 0)
-                    local_stiffness[i][j] -= fe_values.JxW(q) *
+                    local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
                                              fe_values[u_1].value(i, q) *
                                              fe_values[u_0].value(j, q);
                 }
+        }
 
-          dummy.distribute_local_to_global(local_stiffness,
-                                           indices,
-                                           stiffness_matrix);
-        }
-      else if (cell_location == NonMatching::LocationToLevelSet::outside)
-        {
-          // nothing to do
-        }
+      constraints.distribute_local_to_global(
+        local_stiffness, local_vector, indices, stiffness_matrix, rhs);
     }
+
+  ReductionControl solver_control(1000, 1e-10, 1e-10);
+
+  SolverCG<Vector<double>> solver(solver_control);
+
+  solver.solve(stiffness_matrix, solution, rhs, PreconditionIdentity());
+
+  DataOut<dim> data_out;
+
+  data_out.add_data_vector(dof_handler, solution, "solution");
+  data_out.build_patches();
+
+  std::ofstream output("solution.vtu");
+  data_out.write_vtu(output);
 }
 
 
