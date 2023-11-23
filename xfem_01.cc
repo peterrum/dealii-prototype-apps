@@ -50,7 +50,6 @@
 
 #include <fstream>
 
-
 using namespace dealii;
 
 enum ActiveFEIndex
@@ -73,7 +72,6 @@ print_sparsity_pattern(const DoFHandler<dim> &dof_handler,
   std::ofstream out(file_name);
   sparsity_pattern.print_svg(out);
 }
-
 
 template <int dim>
 void
@@ -270,7 +268,7 @@ test()
                     local_stiffness[i][j] += alpha * fe_values.JxW(q) *
                                              fe_values[u_0].value(i, q) *
                                              fe_values[u_0].value(j, q);
-                  else if (i_comp == 0 && j_comp == 0)
+                  else if (i_comp == 1 && j_comp == 1)
                     local_stiffness[i][j] += alpha * fe_values.JxW(q) *
                                              fe_values[u_1].value(i, q) *
                                              fe_values[u_1].value(j, q);
@@ -297,13 +295,13 @@ test()
 
   DataOut<dim> data_out;
 
+  data_out.add_data_vector(ls_dof_handler, ls_vector, "signed_distance");
   data_out.add_data_vector(dof_handler, solution, "solution");
   data_out.build_patches();
 
   std::ofstream output("solution.vtu");
   data_out.write_vtu(output);
 }
-
 
 int
 main()
