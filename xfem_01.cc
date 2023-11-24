@@ -79,6 +79,8 @@ test()
 {
   // create mesh
   const unsigned int fe_degree = 1;
+  const double       lamda_0   = 1.0;
+  const double       lamda_1   = 4.0;
 
   Triangulation<dim> tria;
   GridGenerator::hyper_cube(tria, 0.0, 1.0);
@@ -206,7 +208,7 @@ test()
 
                 if (i_comp == 0)
                   local_vector[i] +=
-                    fe_values.JxW(q) * fe_values[u_0].value(i, q) * 1.0;
+                    fe_values.JxW(q) * fe_values[u_0].value(i, q) * lamda_0;
               }
         }
 
@@ -240,7 +242,7 @@ test()
 
                 if (i_comp == 1)
                   local_vector[i] +=
-                    fe_values.JxW(q) * fe_values[u_1].value(i, q) * 4.0;
+                    fe_values.JxW(q) * fe_values[u_1].value(i, q) * lamda_1;
               }
         }
 
@@ -255,7 +257,8 @@ test()
 
           const auto &fe = cell->get_fe();
 
-          const double alpha = 1;
+          const double alpha = 5 * fe_degree * fe_degree * (lamda_0 * lamda_1) /
+                               (lamda_0 + lamda_1) / cell->diameter();
 
           for (const unsigned int i : fe_values.dof_indices())
             for (const unsigned int j : fe_values.dof_indices())
