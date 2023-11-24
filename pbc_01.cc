@@ -80,17 +80,17 @@ get_strain(const FEValues<dim> &fe_values,
 
 
 /**
- * A helper function that applies a displacement at a given point and 
- * modifies the constraints appropriately. 
+ * A helper function that applies a displacement at a given point and
+ * modifies the constraints appropriately.
  */
 template <int dim, int spacedim, typename Number>
 void
-apply_displacement_at_point(const Mapping<dim, spacedim> &   mapping,
+apply_displacement_at_point(const Mapping<dim, spacedim>    &mapping,
                             const DoFHandler<dim, spacedim> &dof_handler,
-                            const Point<spacedim> &          displacement,
-                            const Point<spacedim> &          point,
-                            const ComponentMask &            component_mask,
-                            AffineConstraints<Number> &      constraints)
+                            const Point<spacedim>           &displacement,
+                            const Point<spacedim>           &point,
+                            const ComponentMask             &component_mask,
+                            AffineConstraints<Number>       &constraints)
 {
   const auto &fe = dof_handler.get_fe();
 
