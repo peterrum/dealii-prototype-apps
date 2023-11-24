@@ -78,7 +78,10 @@ void
 test()
 {
   // create mesh
-  const unsigned int fe_degree = 1;
+  const unsigned int fe_degree = 1;    // polynomial degree
+  const double       lambda_0  = 1.0;  // diffusion coefficient 0
+  const double       lambda_1  = 4.0;  // diffusion coefficient 1
+  const double       mu_1      = 0.02; // jump in solution
 
   Triangulation<dim> tria;
   GridGenerator::hyper_cube(tria, 0.0, 1.0);
@@ -206,7 +209,7 @@ test()
 
                 if (i_comp == 0)
                   local_vector[i] +=
-                    fe_values.JxW(q) * fe_values[u_0].value(i, q) * 1.0;
+                    fe_values.JxW(q) * fe_values[u_0].value(i, q) * lambda_0;
               }
         }
 
@@ -240,7 +243,7 @@ test()
 
                 if (i_comp == 1)
                   local_vector[i] +=
-                    fe_values.JxW(q) * fe_values[u_1].value(i, q) * 4.0;
+                    fe_values.JxW(q) * fe_values[u_1].value(i, q) * lambda_1;
               }
         }
 
@@ -255,7 +258,9 @@ test()
 
           const auto &fe = cell->get_fe();
 
-          const double alpha = 1;
+          const double alpha = 5 * fe_degree * fe_degree *
+                               (lambda_0 * lambda_1) / (lambda_0 + lambda_1) /
+                               cell->diameter();
 
           for (const unsigned int i : fe_values.dof_indices())
             for (const unsigned int j : fe_values.dof_indices())
@@ -281,6 +286,19 @@ test()
                                              fe_values[u_1].value(i, q) *
                                              fe_values[u_0].value(j, q);
                 }
+
+          for (const unsigned int i : fe_values.dof_indices())
+            for (const unsigned int q : fe_values.quadrature_point_indices())
+              {
+                const auto i_comp = fe.system_to_component_index(i).first;
+
+                if (i_comp == 0)
+                  local_vector[i] -= alpha * fe_values.JxW(q) *
+                                     fe_values[u_0].value(i, q) * mu_1;
+                else if (i_comp == 1)
+                  local_vector[i] += alpha * fe_values.JxW(q) *
+                                     fe_values[u_1].value(i, q) * mu_1;
+              }
         }
 
       constraints.distribute_local_to_global(
