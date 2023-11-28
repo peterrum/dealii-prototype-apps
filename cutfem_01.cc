@@ -34,6 +34,7 @@
 #include <deal.II/fe/fe_system.h>
 
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_tools.h>
 
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/precondition.h>
@@ -310,6 +311,48 @@ test()
   SolverCG<Vector<double>> solver(solver_control);
 
   solver.solve(stiffness_matrix, solution, rhs, PreconditionIdentity());
+
+  // Postprocessing: evaluate solution at interface
+  {
+    const MappingQ1<dim>                                  mapping;
+    const FE_Q<dim>                                       ls_fe(fe_degree);
+    GridTools::MarchingCubeAlgorithm<dim, Vector<double>> mca(mapping, ls_fe);
+    std::vector<Point<dim>>                               points_at_interface;
+    mca.process(ls_dof_handler, ls_vector, 0 /*isolevel*/, points_at_interface);
+
+    // remove corner points
+    points_at_interface.erase(std::remove_if(points_at_interface.begin(),
+                                             points_at_interface.end(),
+                                             [](const auto &i) {
+                                               return std::abs(i[0]) < 1e-10 ||
+                                                      std::abs(i[dim - 1]) <
+                                                        1e-10;
+                                             }),
+                              points_at_interface.end());
+
+    double                                     jump_average = 0;
+    Utilities::MPI::RemotePointEvaluation<dim> cache;
+
+    const auto result_0 = VectorTools::point_values<1>(
+      mapping, dof_handler, solution, points_at_interface, cache);
+
+    const auto result_1 =
+      VectorTools::point_values<1>(mapping,
+                                   dof_handler,
+                                   solution,
+                                   points_at_interface,
+                                   cache,
+                                   VectorTools::EvaluationFlags::avg,
+                                   1 /*first selected component*/);
+
+    jump_average = 0;
+    for (unsigned int i = 0; i < result_0.size(); ++i)
+      jump_average += result_1[i] - result_0[i];
+
+    jump_average /= result_0.size();
+    std::cout << "Average jump of the solution at the interface: "
+              << jump_average << " (target value: " << mu_1 << ")" << std::endl;
+  }
 
   DataOut<dim> data_out;
 
