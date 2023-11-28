@@ -39,6 +39,7 @@
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
 
@@ -79,10 +80,14 @@ void
 test()
 {
   // create mesh
-  const unsigned int fe_degree = 1;    // polynomial degree
-  const double       lambda_0  = 1.0;  // diffusion coefficient 0
-  const double       lambda_1  = 4.0;  // diffusion coefficient 1
-  const double       mu_1      = 0.02; // jump in solution
+  const unsigned int fe_degree = 1;   // polynomial degree
+  const double       lambda_0  = 1.0; // diffusion coefficient 0
+  const double       lambda_1  = 1.0; // diffusion coefficient 1
+  const double       kappa_0 =
+    lambda_1 / (lambda_0 + lambda_1); // coefficient for average operator
+  const double kappa_1 =
+    lambda_0 / (lambda_0 + lambda_1); // coefficient for average operator
+  const double mu_1 = 0.02;           // jump in solution
 
   Triangulation<dim> tria;
   GridGenerator::hyper_cube(tria, 0.0, 1.0);
@@ -270,35 +275,68 @@ test()
                   const auto i_comp = fe.system_to_component_index(i).first;
                   const auto j_comp = fe.system_to_component_index(j).first;
 
+                  const auto normal_vector_1 = fe_values.normal_vector(q);
+                  const auto normal_vector_0 = -normal_vector_1;
+
                   if (i_comp == 0 && j_comp == 0)
-                    local_stiffness[i][j] += alpha * fe_values.JxW(q) *
-                                             fe_values[u_0].value(i, q) *
-                                             fe_values[u_0].value(j, q);
+                    local_stiffness[i][j] +=
+                      (alpha * fe_values[u_0].value(i, q) *
+                         fe_values[u_0].value(j, q) +
+                       lambda_0 * kappa_0 * normal_vector_0 *
+                         (fe_values[u_0].gradient(i, q) *
+                            fe_values[u_0].value(j, q) +
+                          fe_values[u_0].value(i, q) *
+                            fe_values[u_0].gradient(j, q))) *
+                      fe_values.JxW(q);
                   else if (i_comp == 1 && j_comp == 1)
-                    local_stiffness[i][j] += alpha * fe_values.JxW(q) *
-                                             fe_values[u_1].value(i, q) *
-                                             fe_values[u_1].value(j, q);
+                    local_stiffness[i][j] +=
+                      (alpha * fe_values[u_1].value(i, q) *
+                         fe_values[u_1].value(j, q) -
+                       lambda_1 * kappa_1 * normal_vector_1 *
+                         (fe_values[u_1].gradient(i, q) *
+                            fe_values[u_1].value(j, q) +
+                          fe_values[u_1].value(i, q) *
+                            fe_values[u_1].gradient(j, q))) *
+                      fe_values.JxW(q);
                   else if (i_comp == 0 && j_comp == 1)
-                    local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
-                                             fe_values[u_0].value(i, q) *
-                                             fe_values[u_1].value(j, q);
+                    local_stiffness[i][j] +=
+                      (-alpha * fe_values[u_0].value(i, q) *
+                         fe_values[u_1].value(j, q) -
+                       lambda_0 * kappa_0 * normal_vector_0 *
+                         (fe_values[u_0].gradient(i, q) *
+                            fe_values[u_1].value(j, q) -
+                          fe_values[u_1].value(i, q) *
+                            fe_values[u_0].gradient(j, q))) *
+                      fe_values.JxW(q);
                   else if (i_comp == 1 && j_comp == 0)
-                    local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
-                                             fe_values[u_1].value(i, q) *
-                                             fe_values[u_0].value(j, q);
+                    local_stiffness[i][j] +=
+                      (-alpha * fe_values[u_1].value(i, q) *
+                         fe_values[u_0].value(j, q) +
+                       lambda_1 * kappa_1 * normal_vector_1 *
+                         (fe_values[u_1].gradient(i, q) *
+                            fe_values[u_0].value(j, q) +
+                          fe_values[u_0].value(i, q) *
+                            fe_values[u_1].gradient(j, q))) *
+                      fe_values.JxW(q);
                 }
 
           for (const unsigned int i : fe_values.dof_indices())
             for (const unsigned int q : fe_values.quadrature_point_indices())
               {
                 const auto i_comp = fe.system_to_component_index(i).first;
+                const auto normal_vector_1 = fe_values.normal_vector(q);
+                const auto normal_vector_0 = -normal_vector_1;
 
                 if (i_comp == 0)
-                  local_vector[i] -= alpha * fe_values.JxW(q) *
-                                     fe_values[u_0].value(i, q) * mu_1;
+                  local_vector[i] += (-alpha * fe_values[u_0].value(i, q) -
+                                      lambda_0 * kappa_0 * normal_vector_0 *
+                                        fe_values[u_0].gradient(i, q)) *
+                                     mu_1 * fe_values.JxW(q);
                 else if (i_comp == 1)
-                  local_vector[i] += alpha * fe_values.JxW(q) *
-                                     fe_values[u_1].value(i, q) * mu_1;
+                  local_vector[i] += (alpha * fe_values[u_1].value(i, q) -
+                                      lambda_1 * kappa_1 * normal_vector_1 *
+                                        fe_values[u_1].gradient(i, q)) *
+                                     mu_1 * fe_values.JxW(q);
               }
         }
 
@@ -308,9 +346,13 @@ test()
 
   ReductionControl solver_control(1000, 1e-10, 1e-10);
 
-  SolverCG<Vector<double>> solver(solver_control);
+  SolverGMRES<Vector<double>> solver(solver_control);
+  PreconditionJacobi          preconditioner;
+  preconditioner.initialize(stiffness_matrix);
+  solver.solve(stiffness_matrix, solution, rhs, preconditioner);
 
-  solver.solve(stiffness_matrix, solution, rhs, PreconditionIdentity());
+  std::cout << "    - solved in " << solver_control.last_step()
+            << " iterations." << std::endl;
 
   // Postprocessing: evaluate solution at interface
   {
@@ -354,6 +396,8 @@ test()
               << jump_average << " (target value: " << mu_1 << ")" << std::endl;
   }
 
+
+  // Postprocessing: output vtu
   DataOut<dim> data_out;
 
   data_out.add_data_vector(ls_dof_handler, ls_vector, "signed_distance");
