@@ -76,6 +76,35 @@ print_sparsity_pattern(const DoFHandler<dim> &dof_handler,
 }
 
 template <int dim>
+bool
+face_has_ghost_penalty(
+  const NonMatching::MeshClassifier<dim>                  &mesh_classifier,
+  const typename Triangulation<dim>::active_cell_iterator &cell,
+  const unsigned int                                       face_index,
+  const NonMatching::LocationToLevelSet                   &location_phase =
+    NonMatching::LocationToLevelSet::outside)
+{
+  if (cell->at_boundary(face_index))
+    return false;
+
+  const NonMatching::LocationToLevelSet cell_location =
+    mesh_classifier.location_to_level_set(cell);
+
+  const NonMatching::LocationToLevelSet neighbor_location =
+    mesh_classifier.location_to_level_set(cell->neighbor(face_index));
+
+  if (cell_location == NonMatching::LocationToLevelSet::intersected &&
+      neighbor_location != location_phase)
+    return true;
+
+  if (neighbor_location == NonMatching::LocationToLevelSet::intersected &&
+      cell_location != location_phase)
+    return true;
+
+  return false;
+}
+
+template <int dim>
 void
 test()
 {
@@ -86,8 +115,9 @@ test()
   const double       kappa_0 =
     lambda_1 / (lambda_0 + lambda_1); // coefficient for average operator
   const double kappa_1 =
-    lambda_0 / (lambda_0 + lambda_1); // coefficient for average operator
-  const double mu_1 = 0.02;           // jump in solution
+    lambda_0 / (lambda_0 + lambda_1);  // coefficient for average operator
+  const double mu_1            = 0.02; // jump in solution
+  const double ghost_parameter = 0.5;  // ghost penalty
 
   Triangulation<dim> tria;
   GridGenerator::hyper_cube(tria, 0.0, 1.0);
@@ -338,6 +368,100 @@ test()
                                         fe_values[u_1].gradient(i, q)) *
                                      mu_1 * fe_values.JxW(q);
               }
+
+
+          if (ghost_parameter > 0)
+            {
+              const double cell_side_length = cell->minimum_vertex_distance();
+              // ghost penalty
+              const QGauss<dim - 1>  face_quadrature(fe_degree + 1);
+              FEInterfaceValues<dim> fe_interface_values(
+                fe, // cell->get_fe(),
+                face_quadrature,
+                update_gradients | update_JxW_values | update_normal_vectors);
+              const unsigned int invalid = numbers::invalid_unsigned_int;
+
+              // ghost penalty
+              for (const unsigned int f : cell->face_indices())
+                {
+                  fe_interface_values.reinit(cell,
+                                             f,
+                                             invalid,
+                                             cell->neighbor(f),
+                                             cell->neighbor_of_neighbor(f),
+                                             invalid,
+                                             invalid,
+                                             invalid,
+                                             ActiveFEIndex::intersected);
+
+                  // FEValuesExtractors::Scalar u_0(0);
+                  // FEValuesExtractors::Scalar u_1(1);
+                  // const unsigned int         n_interface_dofs =
+                  // fe_interface_values.n_current_interface_dofs();
+
+                  // FullMatrix<double> local_stabilization(n_interface_dofs,
+                  // n_interface_dofs);
+
+                  // for (unsigned int q = 0;
+                  // q < fe_interface_values.n_quadrature_points;
+                  //++q)
+                  //{
+                  // const Tensor<1, dim> normal =
+                  // fe_interface_values.normal(q);
+                  // for (unsigned int i = 0; i < n_interface_dofs; ++i)
+                  // for (unsigned int j = 0; j < n_interface_dofs; ++j)
+                  //{
+                  // const auto i_comp =
+                  // fe.system_to_component_index(i).first;
+                  // const auto j_comp =
+                  // fe.system_to_component_index(j).first;
+
+                  // if (face_has_ghost_penalty(
+                  // mesh_classifier,
+                  // cell,
+                  // f,
+                  // NonMatching::LocationToLevelSet::inside) &&
+                  //(i_comp == 0) && (j_comp == 0))
+                  //{
+                  // local_stabilization(i, j) +=
+                  //.5 * ghost_parameter * cell_side_length *
+                  // normal *
+                  // fe_interface_values[u_0].jump_in_gradients(
+                  // i, q) *
+                  // normal *
+                  // fe_interface_values[u_0].jump_in_gradients(
+                  // j, q) *
+                  // fe_interface_values.JxW(q);
+                  //}
+                  // if (face_has_ghost_penalty(
+                  // mesh_classifier,
+                  // cell,
+                  // f,
+                  // NonMatching::LocationToLevelSet::outside) &&
+                  //(i_comp == 1) && (j_comp == 1))
+                  //{
+                  // local_stabilization(i, j) +=
+                  //.5 * ghost_parameter * cell_side_length *
+                  // normal *
+                  // fe_interface_values[u_1].jump_in_gradients(
+                  // i, q) *
+                  // normal *
+                  // fe_interface_values[u_1].jump_in_gradients(
+                  // j, q) *
+                  // fe_interface_values.JxW(q);
+                  //}
+                  //}
+                }
+
+              // const std::vector<types::global_dof_index>
+              // local_interface_dof_indices =
+              // fe_interface_values.get_interface_dof_indices();
+
+              // constraints.distribute_local_to_global(
+              // local_stabilization,
+              // local_interface_dof_indices,
+              // stiffness_matrix);
+            }
         }
 
       constraints.distribute_local_to_global(
