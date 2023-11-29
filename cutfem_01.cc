@@ -137,6 +137,8 @@ test()
   sparsity_pattern.copy_from(dynamic_sparsity_pattern);
   SparseMatrix<double> stiffness_matrix;
   stiffness_matrix.reinit(sparsity_pattern);
+  SparseMatrix<double> mass_matrix;
+  mass_matrix.reinit(sparsity_pattern);
 
   // assembly sparse matrix
   const QGauss<1> quadrature_1D(fe_degree + 1);
@@ -176,6 +178,7 @@ test()
 
       const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
       FullMatrix<double> local_stiffness(dofs_per_cell, dofs_per_cell);
+      FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
       Vector<double>     local_vector(dofs_per_cell);
       indices.resize(dofs_per_cell);
       cell->get_dof_indices(indices);
@@ -198,9 +201,14 @@ test()
                   const auto j_comp = fe.system_to_component_index(j).first;
 
                   if (i_comp == 0 && j_comp == 0)
-                    local_stiffness[i][j] += fe_values.JxW(q) *
-                                             fe_values[u_0].gradient(i, q) *
-                                             fe_values[u_0].gradient(j, q);
+                    {
+                      local_stiffness[i][j] += fe_values.JxW(q) *
+                                               fe_values[u_0].gradient(i, q) *
+                                               fe_values[u_0].gradient(j, q);
+                      local_mass[i][j] += fe_values.JxW(q) *
+                                          fe_values[u_0].value(i, q) *
+                                          fe_values[u_0].value(j, q);
+                    }
                 }
 
           for (const unsigned int i : fe_values.dof_indices())
@@ -232,9 +240,14 @@ test()
                   const auto j_comp = fe.system_to_component_index(j).first;
 
                   if (i_comp == 1 && j_comp == 1)
-                    local_stiffness[i][j] += fe_values.JxW(q) *
-                                             fe_values[u_1].gradient(i, q) *
-                                             fe_values[u_1].gradient(j, q);
+                    {
+                      local_stiffness[i][j] += fe_values.JxW(q) *
+                                               fe_values[u_1].gradient(i, q) *
+                                               fe_values[u_1].gradient(j, q);
+                      local_mass[i][j] += fe_values.JxW(q) *
+                                          fe_values[u_1].value(i, q) *
+                                          fe_values[u_1].value(j, q);
+                    }
                 }
 
           for (const unsigned int i : fe_values.dof_indices())
@@ -304,6 +317,7 @@ test()
 
       constraints.distribute_local_to_global(
         local_stiffness, local_vector, indices, stiffness_matrix, rhs);
+      constraints.distribute_local_to_global(local_mass, indices, mass_matrix);
     }
 
   ReductionControl solver_control(1000, 1e-10, 1e-10);
