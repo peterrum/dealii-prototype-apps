@@ -50,6 +50,7 @@
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
+#include <string>
 
 using namespace dealii;
 
@@ -83,7 +84,8 @@ test()
   const double       lambda_0  = 1.0;  // diffusion coefficient 0
   const double       lambda_1  = 4.0;  // diffusion coefficient 1
   const double       mu_1      = 0.02; // jump in solution
-
+                                       //
+  const double       dt = 0.01;        // time step size
   Triangulation<dim> tria;
   GridGenerator::hyper_cube(tria, 0.0, 1.0);
   tria.refine_global(4);
@@ -168,214 +170,239 @@ test()
   Vector<double> solution(dof_handler.n_dofs());
   Vector<double> rhs(dof_handler.n_dofs());
 
-  solution = 0.0;
 
-  for (const auto &cell : dof_handler.active_cell_iterators())
-    {
-      const auto cell_location = mesh_classifier.location_to_level_set(cell);
+  const auto assemble = [&]() {
+    stiffness_matrix = 0;
 
-      non_matching_fe_values.reinit(cell);
+    for (const auto &cell : dof_handler.active_cell_iterators())
+      {
+        const auto cell_location = mesh_classifier.location_to_level_set(cell);
 
-      const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
-      FullMatrix<double> local_stiffness(dofs_per_cell, dofs_per_cell);
-      FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
-      Vector<double>     local_vector(dofs_per_cell);
-      indices.resize(dofs_per_cell);
-      cell->get_dof_indices(indices);
+        non_matching_fe_values.reinit(cell);
 
-      if (cell_location == NonMatching::LocationToLevelSet::inside ||
-          cell_location == NonMatching::LocationToLevelSet::intersected)
-        {
-          const auto &fe_values =
-            *non_matching_fe_values.get_inside_fe_values();
+        const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+        FullMatrix<double> local_stiffness(dofs_per_cell, dofs_per_cell);
+        FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
+        Vector<double>     local_vector(dofs_per_cell);
+        indices.resize(dofs_per_cell);
+        cell->get_dof_indices(indices);
 
-          FEValuesExtractors::Scalar u_0(0);
+        if (cell_location == NonMatching::LocationToLevelSet::inside ||
+            cell_location == NonMatching::LocationToLevelSet::intersected)
+          {
+            const auto &fe_values =
+              *non_matching_fe_values.get_inside_fe_values();
 
-          const auto &fe = cell->get_fe();
+            FEValuesExtractors::Scalar u_0(0);
 
-          for (const unsigned int i : fe_values.dof_indices())
-            for (const unsigned int j : fe_values.dof_indices())
+            const auto &fe = cell->get_fe();
+
+            for (const unsigned int i : fe_values.dof_indices())
+              for (const unsigned int j : fe_values.dof_indices())
+                for (const unsigned int q :
+                     fe_values.quadrature_point_indices())
+                  {
+                    const auto i_comp = fe.system_to_component_index(i).first;
+                    const auto j_comp = fe.system_to_component_index(j).first;
+
+                    if (i_comp == 0 && j_comp == 0)
+                      {
+                        local_stiffness[i][j] += fe_values.JxW(q) *
+                                                 fe_values[u_0].gradient(i, q) *
+                                                 fe_values[u_0].gradient(j, q);
+                        local_mass[i][j] += fe_values.JxW(q) *
+                                            fe_values[u_0].value(i, q) *
+                                            fe_values[u_0].value(j, q) / dt;
+                      }
+                  }
+
+            for (const unsigned int i : fe_values.dof_indices())
               for (const unsigned int q : fe_values.quadrature_point_indices())
                 {
                   const auto i_comp = fe.system_to_component_index(i).first;
-                  const auto j_comp = fe.system_to_component_index(j).first;
 
-                  if (i_comp == 0 && j_comp == 0)
-                    {
-                      local_stiffness[i][j] += fe_values.JxW(q) *
-                                               fe_values[u_0].gradient(i, q) *
-                                               fe_values[u_0].gradient(j, q);
-                      local_mass[i][j] += fe_values.JxW(q) *
-                                          fe_values[u_0].value(i, q) *
-                                          fe_values[u_0].value(j, q);
-                    }
+                  if (i_comp == 0)
+                    local_vector[i] +=
+                      fe_values.JxW(q) * fe_values[u_0].value(i, q) * lambda_0;
                 }
+          }
 
-          for (const unsigned int i : fe_values.dof_indices())
-            for (const unsigned int q : fe_values.quadrature_point_indices())
-              {
-                const auto i_comp = fe.system_to_component_index(i).first;
+        if (cell_location == NonMatching::LocationToLevelSet::outside ||
+            cell_location == NonMatching::LocationToLevelSet::intersected)
+          {
+            const auto &fe_values =
+              *non_matching_fe_values.get_outside_fe_values();
 
-                if (i_comp == 0)
-                  local_vector[i] +=
-                    fe_values.JxW(q) * fe_values[u_0].value(i, q) * lambda_0;
-              }
-        }
+            FEValuesExtractors::Scalar u_1(1);
 
-      if (cell_location == NonMatching::LocationToLevelSet::outside ||
-          cell_location == NonMatching::LocationToLevelSet::intersected)
-        {
-          const auto &fe_values =
-            *non_matching_fe_values.get_outside_fe_values();
+            const auto &fe = cell->get_fe();
 
-          FEValuesExtractors::Scalar u_1(1);
+            for (const unsigned int i : fe_values.dof_indices())
+              for (const unsigned int j : fe_values.dof_indices())
+                for (const unsigned int q :
+                     fe_values.quadrature_point_indices())
+                  {
+                    const auto i_comp = fe.system_to_component_index(i).first;
+                    const auto j_comp = fe.system_to_component_index(j).first;
 
-          const auto &fe = cell->get_fe();
+                    if (i_comp == 1 && j_comp == 1)
+                      {
+                        local_stiffness[i][j] += fe_values.JxW(q) *
+                                                 fe_values[u_1].gradient(i, q) *
+                                                 fe_values[u_1].gradient(j, q);
+                        local_mass[i][j] += fe_values.JxW(q) *
+                                            fe_values[u_1].value(i, q) *
+                                            fe_values[u_1].value(j, q) / dt;
+                      }
+                  }
 
-          for (const unsigned int i : fe_values.dof_indices())
-            for (const unsigned int j : fe_values.dof_indices())
+            for (const unsigned int i : fe_values.dof_indices())
               for (const unsigned int q : fe_values.quadrature_point_indices())
                 {
                   const auto i_comp = fe.system_to_component_index(i).first;
-                  const auto j_comp = fe.system_to_component_index(j).first;
 
-                  if (i_comp == 1 && j_comp == 1)
-                    {
-                      local_stiffness[i][j] += fe_values.JxW(q) *
-                                               fe_values[u_1].gradient(i, q) *
-                                               fe_values[u_1].gradient(j, q);
-                      local_mass[i][j] += fe_values.JxW(q) *
-                                          fe_values[u_1].value(i, q) *
-                                          fe_values[u_1].value(j, q);
-                    }
+                  if (i_comp == 1)
+                    local_vector[i] +=
+                      fe_values.JxW(q) * fe_values[u_1].value(i, q) * lambda_1;
                 }
+          }
 
-          for (const unsigned int i : fe_values.dof_indices())
-            for (const unsigned int q : fe_values.quadrature_point_indices())
-              {
-                const auto i_comp = fe.system_to_component_index(i).first;
+        if (cell_location == NonMatching::LocationToLevelSet::intersected)
+          {
+            // compute coupling term
+            const auto &fe_values =
+              *non_matching_fe_values.get_surface_fe_values();
 
-                if (i_comp == 1)
-                  local_vector[i] +=
-                    fe_values.JxW(q) * fe_values[u_1].value(i, q) * lambda_1;
-              }
-        }
+            FEValuesExtractors::Scalar u_0(0);
+            FEValuesExtractors::Scalar u_1(1);
 
-      if (cell_location == NonMatching::LocationToLevelSet::intersected)
-        {
-          // compute coupling term
-          const auto &fe_values =
-            *non_matching_fe_values.get_surface_fe_values();
+            const auto &fe = cell->get_fe();
 
-          FEValuesExtractors::Scalar u_0(0);
-          FEValuesExtractors::Scalar u_1(1);
+            const double alpha = 5 * fe_degree * fe_degree *
+                                 (lambda_0 * lambda_1) / (lambda_0 + lambda_1) /
+                                 cell->diameter();
 
-          const auto &fe = cell->get_fe();
+            for (const unsigned int i : fe_values.dof_indices())
+              for (const unsigned int j : fe_values.dof_indices())
+                for (const unsigned int q :
+                     fe_values.quadrature_point_indices())
+                  {
+                    const auto i_comp = fe.system_to_component_index(i).first;
+                    const auto j_comp = fe.system_to_component_index(j).first;
 
-          const double alpha = 5 * fe_degree * fe_degree *
-                               (lambda_0 * lambda_1) / (lambda_0 + lambda_1) /
-                               cell->diameter();
+                    if (i_comp == 0 && j_comp == 0)
+                      local_stiffness[i][j] += alpha * fe_values.JxW(q) *
+                                               fe_values[u_0].value(i, q) *
+                                               fe_values[u_0].value(j, q);
+                    else if (i_comp == 1 && j_comp == 1)
+                      local_stiffness[i][j] += alpha * fe_values.JxW(q) *
+                                               fe_values[u_1].value(i, q) *
+                                               fe_values[u_1].value(j, q);
+                    else if (i_comp == 0 && j_comp == 1)
+                      local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
+                                               fe_values[u_0].value(i, q) *
+                                               fe_values[u_1].value(j, q);
+                    else if (i_comp == 1 && j_comp == 0)
+                      local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
+                                               fe_values[u_1].value(i, q) *
+                                               fe_values[u_0].value(j, q);
+                  }
 
-          for (const unsigned int i : fe_values.dof_indices())
-            for (const unsigned int j : fe_values.dof_indices())
+            for (const unsigned int i : fe_values.dof_indices())
               for (const unsigned int q : fe_values.quadrature_point_indices())
                 {
                   const auto i_comp = fe.system_to_component_index(i).first;
-                  const auto j_comp = fe.system_to_component_index(j).first;
 
-                  if (i_comp == 0 && j_comp == 0)
-                    local_stiffness[i][j] += alpha * fe_values.JxW(q) *
-                                             fe_values[u_0].value(i, q) *
-                                             fe_values[u_0].value(j, q);
-                  else if (i_comp == 1 && j_comp == 1)
-                    local_stiffness[i][j] += alpha * fe_values.JxW(q) *
-                                             fe_values[u_1].value(i, q) *
-                                             fe_values[u_1].value(j, q);
-                  else if (i_comp == 0 && j_comp == 1)
-                    local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
-                                             fe_values[u_0].value(i, q) *
-                                             fe_values[u_1].value(j, q);
-                  else if (i_comp == 1 && j_comp == 0)
-                    local_stiffness[i][j] -= alpha * fe_values.JxW(q) *
-                                             fe_values[u_1].value(i, q) *
-                                             fe_values[u_0].value(j, q);
+                  if (i_comp == 0)
+                    local_vector[i] -= alpha * fe_values.JxW(q) *
+                                       fe_values[u_0].value(i, q) * mu_1;
+                  else if (i_comp == 1)
+                    local_vector[i] += alpha * fe_values.JxW(q) *
+                                       fe_values[u_1].value(i, q) * mu_1;
                 }
+          }
 
-          for (const unsigned int i : fe_values.dof_indices())
-            for (const unsigned int q : fe_values.quadrature_point_indices())
-              {
-                const auto i_comp = fe.system_to_component_index(i).first;
+        constraints.distribute_local_to_global(
+          local_stiffness, local_vector, indices, stiffness_matrix, rhs);
+        constraints.distribute_local_to_global(local_mass,
+                                               indices,
+                                               mass_matrix);
+      }
+  };
 
-                if (i_comp == 0)
-                  local_vector[i] -= alpha * fe_values.JxW(q) *
-                                     fe_values[u_0].value(i, q) * mu_1;
-                else if (i_comp == 1)
-                  local_vector[i] += alpha * fe_values.JxW(q) *
-                                     fe_values[u_1].value(i, q) * mu_1;
-              }
-        }
-
-      constraints.distribute_local_to_global(
-        local_stiffness, local_vector, indices, stiffness_matrix, rhs);
-      constraints.distribute_local_to_global(local_mass, indices, mass_matrix);
-    }
-
-  ReductionControl solver_control(1000, 1e-10, 1e-10);
-
+  ReductionControl         solver_control(1000, 1e-10, 1e-10);
   SolverCG<Vector<double>> solver(solver_control);
 
-  solver.solve(stiffness_matrix, solution, rhs, PreconditionIdentity());
 
-  // Postprocessing: evaluate solution at interface
-  {
-    const MappingQ1<dim>                                  mapping;
-    const FE_Q<dim>                                       ls_fe(fe_degree);
-    GridTools::MarchingCubeAlgorithm<dim, Vector<double>> mca(mapping, ls_fe);
-    std::vector<Point<dim>>                               points_at_interface;
-    mca.process(ls_dof_handler, ls_vector, 0 /*isolevel*/, points_at_interface);
+  for (double t = 0; t <= 0.1; t += dt)
+    {
+      std::cout << "t: " << t << std::endl;
+      solution /= dt;
+      // compute RHS = L + M * u_n/dt
+      assemble();
+      mass_matrix.vmult_add(rhs, solution);
 
-    // remove corner points
-    points_at_interface.erase(std::remove_if(points_at_interface.begin(),
-                                             points_at_interface.end(),
-                                             [](const auto &i) {
-                                               return std::abs(i[0]) < 1e-10 ||
-                                                      std::abs(i[dim - 1]) <
-                                                        1e-10;
-                                             }),
-                              points_at_interface.end());
+      // M/dt + A
+      stiffness_matrix.add(1. / dt, mass_matrix);
+      solver.solve(stiffness_matrix, solution, rhs, PreconditionIdentity());
 
-    double                                     jump_average = 0;
-    Utilities::MPI::RemotePointEvaluation<dim> cache;
+      DataOut<dim> data_out;
 
-    const auto result_0 = VectorTools::point_values<1>(
-      mapping, dof_handler, solution, points_at_interface, cache);
+      data_out.add_data_vector(ls_dof_handler, ls_vector, "signed_distance");
+      data_out.add_data_vector(dof_handler, solution, "solution");
+      data_out.add_data_vector(dof_handler, rhs, "rhs");
+      data_out.build_patches();
 
-    const auto result_1 =
-      VectorTools::point_values<1>(mapping,
-                                   dof_handler,
-                                   solution,
-                                   points_at_interface,
-                                   cache,
-                                   VectorTools::EvaluationFlags::avg,
-                                   1 /*first selected component*/);
+      std::ofstream output("solution_" + std::to_string(t) + ".vtu");
+      data_out.write_vtu(output);
+      // Postprocessing: evaluate solution at interface
+      {
+        const MappingQ1<dim>                                  mapping;
+        const FE_Q<dim>                                       ls_fe(fe_degree);
+        GridTools::MarchingCubeAlgorithm<dim, Vector<double>> mca(mapping,
+                                                                  ls_fe);
+        std::vector<Point<dim>> points_at_interface;
+        mca.process(ls_dof_handler,
+                    ls_vector,
+                    0 /*isolevel*/,
+                    points_at_interface);
 
-    jump_average = 0;
-    for (unsigned int i = 0; i < result_0.size(); ++i)
-      jump_average += result_1[i] - result_0[i];
+        // remove corner points
+        points_at_interface.erase(std::remove_if(points_at_interface.begin(),
+                                                 points_at_interface.end(),
+                                                 [](const auto &i) {
+                                                   return std::abs(i[0]) <
+                                                            1e-10 ||
+                                                          std::abs(i[dim - 1]) <
+                                                            1e-10;
+                                                 }),
+                                  points_at_interface.end());
 
-    jump_average /= result_0.size();
-    std::cout << "Average jump of the solution at the interface: "
-              << jump_average << " (target value: " << mu_1 << ")" << std::endl;
-  }
+        double                                     jump_average = 0;
+        Utilities::MPI::RemotePointEvaluation<dim> cache;
 
-  DataOut<dim> data_out;
+        const auto result_0 = VectorTools::point_values<1>(
+          mapping, dof_handler, solution, points_at_interface, cache);
 
-  data_out.add_data_vector(ls_dof_handler, ls_vector, "signed_distance");
-  data_out.add_data_vector(dof_handler, solution, "solution");
-  data_out.build_patches();
+        const auto result_1 =
+          VectorTools::point_values<1>(mapping,
+                                       dof_handler,
+                                       solution,
+                                       points_at_interface,
+                                       cache,
+                                       VectorTools::EvaluationFlags::avg,
+                                       1 /*first selected component*/);
 
-  std::ofstream output("solution.vtu");
-  data_out.write_vtu(output);
+        jump_average = 0;
+        for (unsigned int i = 0; i < result_0.size(); ++i)
+          jump_average += result_1[i] - result_0[i];
+
+        jump_average /= result_0.size();
+        std::cout << "Average jump of the solution at the interface: "
+                  << jump_average << " (target value: " << mu_1 << ")"
+                  << std::endl;
+      }
+    }
 }
 
 int
