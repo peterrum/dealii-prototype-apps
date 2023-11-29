@@ -88,7 +88,7 @@ test()
   const double       dt = 0.01;        // time step size
   Triangulation<dim> tria;
   GridGenerator::hyper_cube(tria, 0.0, 1.0);
-  tria.refine_global(4);
+  tria.refine_global(6);
 
   // create level-set field and mesh classifier
   DoFHandler<dim> ls_dof_handler(tria);
@@ -172,7 +172,9 @@ test()
 
 
   const auto assemble = [&]() {
+    rhs              = 0;
     stiffness_matrix = 0;
+    mass_matrix      = 0;
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
