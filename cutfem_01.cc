@@ -374,10 +374,11 @@ test()
             {
               const double cell_side_length = cell->minimum_vertex_distance();
               // ghost penalty
+              QGauss<dim - 1>          face_quad(fe_degree + 1);
               hp::QCollection<dim - 1> face_quadrature;
               face_quadrature.push_back(QGauss<dim - 1>(fe_degree + 1));
               FEInterfaceValues<dim> fe_interface_values(
-                fe_collection, // cell->get_fe(),
+                fe_collection, //                                cell->get_fe(),
                 face_quadrature,
                 update_gradients | update_JxW_values | update_normal_vectors);
               const unsigned int invalid = numbers::invalid_unsigned_int;
@@ -395,21 +396,20 @@ test()
                       f,
                       NonMatching::LocationToLevelSet::outside))
                   {
-                    fe_interface_values.reinit(
-                      cell,
-                      f,
-                      invalid,
-                      cell->neighbor(f),
-                      cell->neighbor_of_neighbor(f),
-                      invalid,
-                      invalid,
-                      invalid,
-                      invalid // ActiveFEIndex::intersected
-                    );
+                    fe_interface_values.reinit(cell,
+                                               f,
+                                               invalid,
+                                               cell->neighbor(f),
+                                               cell->neighbor_of_neighbor(f),
+                                               invalid,
+                                               invalid,
+                                               invalid,
+                                               invalid);
 
                     FEValuesExtractors::Scalar u_0(0);
                     FEValuesExtractors::Scalar u_1(1);
-                    const unsigned int         n_interface_dofs =
+
+                    const unsigned int n_interface_dofs =
                       fe_interface_values.n_current_interface_dofs();
 
                     FullMatrix<double> local_stabilization(n_interface_dofs,
@@ -421,20 +421,49 @@ test()
                       {
                         const Tensor<1, dim> normal =
                           fe_interface_values.normal(q);
-                        for (unsigned int i = 0; i < n_interface_dofs; ++i)
-                          for (unsigned int j = 0; j < n_interface_dofs; ++j)
+                        for (const auto i : fe_interface_values.dof_indices())
+                          for (const auto j : fe_interface_values.dof_indices())
                             {
-                              const auto i_comp =
-                                fe.system_to_component_index(i).first;
-                              const auto j_comp =
-                                fe.system_to_component_index(j).first;
+                              const auto i_pair =
+                                fe_interface_values
+                                  .interface_dof_to_dof_indices(i);
+                              const auto j_pair =
+                                fe_interface_values
+                                  .interface_dof_to_dof_indices(j);
+
+                              const auto i_comp_inner =
+                                (i_pair[0] == numbers::invalid_unsigned_int) ?
+                                  numbers::invalid_unsigned_int :
+                                  fe.system_to_component_index(i_pair[0]).first;
+
+                              const auto i_comp_outer =
+                                (i_pair[1] == numbers::invalid_unsigned_int) ?
+                                  numbers::invalid_unsigned_int :
+                                  cell->neighbor(f)
+                                    ->get_fe()
+                                    .system_to_component_index(i_pair[1])
+                                    .first;
+
+                              const auto j_comp_inner =
+                                (j_pair[0] == numbers::invalid_unsigned_int) ?
+                                  numbers::invalid_unsigned_int :
+                                  fe.system_to_component_index(j_pair[0]).first;
+
+                              const auto j_comp_outer =
+                                (j_pair[1] == numbers::invalid_unsigned_int) ?
+                                  numbers::invalid_unsigned_int :
+                                  cell->neighbor(f)
+                                    ->get_fe()
+                                    .system_to_component_index(j_pair[1])
+                                    .first;
 
                               if (face_has_ghost_penalty(
                                     mesh_classifier,
                                     cell,
                                     f,
                                     NonMatching::LocationToLevelSet::inside) &&
-                                  (i_comp == 0) && (j_comp == 0))
+                                  (i_comp_inner == 0) && (j_comp_inner == 0) &&
+                                  (i_comp_outer == 0) && (j_comp_outer == 0))
                                 {
                                   local_stabilization(i, j) +=
                                     .5 * ghost_parameter * cell_side_length *
@@ -451,7 +480,8 @@ test()
                                     cell,
                                     f,
                                     NonMatching::LocationToLevelSet::outside) &&
-                                  (i_comp == 1) && (j_comp == 1))
+                                  (i_comp_inner == 1) && (j_comp_inner == 1) &&
+                                  (i_comp_outer == 1) && (j_comp_outer == 1))
                                 {
                                   local_stabilization(i, j) +=
                                     .5 * ghost_parameter * cell_side_length *
